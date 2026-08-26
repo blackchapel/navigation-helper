@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.RideLink" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!-- Used by ShareReceiverActivity, which has no visible UI of its own. -->
+    <style name="Theme.RideLink.Transparent" parent="Theme.RideLink">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+</resources>
