@@ -123,6 +123,6 @@ class NearbyManager(context: Context) {
 
     companion object {
         const val SERVICE_ID = "com.ridelink.SERVICE"
-        private const val LOCAL_ENDPOINT_NAME = "RideLink-${Build.MODEL}"
+        private val LOCAL_ENDPOINT_NAME = "RideLink-${Build.MODEL}"
     }
 }
