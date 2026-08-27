@@ -6,7 +6,9 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -38,6 +40,9 @@ fun requiredNearbyPermissions(): Array<String> {
     } else {
         permissions += Manifest.permission.ACCESS_FINE_LOCATION
     }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        permissions += Manifest.permission.NEARBY_WIFI_DEVICES
+    }
     return permissions.toTypedArray()
 }
 
@@ -51,15 +56,33 @@ private fun isBluetoothEnabled(context: Context): Boolean {
     return manager?.adapter?.isEnabled == true
 }
 
+private fun isWifiEnabled(context: Context): Boolean {
+    val manager = context.getSystemService(WifiManager::class.java)
+    return manager?.isWifiEnabled == true
+}
+
+private fun wifiSettingsIntent(): Intent =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        // Android hasn't allowed toggling Wi-Fi programmatically since API 29 --
+        // this opens the quick-settings panel instead of the full Settings app.
+        Intent(Settings.Panel.ACTION_WIFI)
+    } else {
+        Intent(Settings.ACTION_WIFI_SETTINGS)
+    }
+
 /**
- * Blocks [content] behind runtime permissions and a Bluetooth-enabled check --
- * both are required before advertising/discovery will work at all.
+ * Blocks [content] behind runtime permissions and Bluetooth/Wi-Fi-enabled
+ * checks -- all three are required before advertising/discovery will work.
+ * Nearby Connections mixes Bluetooth and Wi-Fi mediums, and (per Google's
+ * 2026 changelog) is moving away from silently enabling these radios itself,
+ * so the app has to check and prompt for both explicitly.
  */
 @Composable
 fun PermissionsAndRadioGate(content: @Composable () -> Unit) {
     val context = LocalContext.current
     var permissionsGranted by remember { mutableStateOf(hasAllPermissions(context)) }
     var bluetoothEnabled by remember { mutableStateOf(isBluetoothEnabled(context)) }
+    var wifiEnabled by remember { mutableStateOf(isWifiEnabled(context)) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -71,6 +94,12 @@ fun PermissionsAndRadioGate(content: @Composable () -> Unit) {
         ActivityResultContracts.StartActivityForResult()
     ) {
         bluetoothEnabled = isBluetoothEnabled(context)
+    }
+
+    val enableWifiLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        wifiEnabled = isWifiEnabled(context)
     }
 
     LaunchedEffect(Unit) {
@@ -93,6 +122,13 @@ fun PermissionsAndRadioGate(content: @Composable () -> Unit) {
                 "phones directly.",
             buttonText = "Enable Bluetooth",
             onClick = { enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) },
+        )
+
+        !wifiEnabled -> GateScreen(
+            message = "Wi-Fi is off. RideLink also uses Wi-Fi (no internet " +
+                "needed, just the radio) to connect the two phones directly.",
+            buttonText = "Enable Wi-Fi",
+            onClick = { enableWifiLauncher.launch(wifiSettingsIntent()) },
         )
 
         else -> content()
