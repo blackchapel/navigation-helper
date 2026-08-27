@@ -1,5 +1,6 @@
 package com.ridelink.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -32,10 +33,14 @@ import androidx.core.view.WindowCompat
 import com.ridelink.app.permissions.PermissionsAndRadioGate
 import com.ridelink.app.pillion.PillionScreen
 import com.ridelink.app.rider.RiderScreen
+import com.ridelink.app.rider.RiderSession
 import com.ridelink.app.ui.theme.RideLinkTheme
 import com.ridelink.app.ui.theme.ThemePreferences
 
 private enum class Role { RIDER, PILLION }
+
+/** Carries a route link from RiderForegroundService's route notification. */
+const val EXTRA_ROUTE_LINK = "com.ridelink.app.EXTRA_ROUTE_LINK"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,6 +48,25 @@ class MainActivity : ComponentActivity() {
         setContent {
             RideLinkApp()
         }
+        handleRouteIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleRouteIntent(intent)
+    }
+
+    // Tapping the "new route" notification launches this Activity (a
+    // notification tap has no background-activity-start restriction, unlike
+    // launching Google Maps directly from a background service) carrying the
+    // route link; once we're genuinely in the foreground, relaunching Maps
+    // from here has no such restriction either.
+    private fun handleRouteIntent(intent: Intent?) {
+        val link = intent?.getStringExtra(EXTRA_ROUTE_LINK) ?: return
+        RiderSession.openInGoogleMaps(this, link)
+        // Clear it so a later recreation (e.g. rotation) doesn't refire this.
+        intent.removeExtra(EXTRA_ROUTE_LINK)
     }
 }
 
