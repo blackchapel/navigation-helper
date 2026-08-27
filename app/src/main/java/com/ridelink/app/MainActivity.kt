@@ -3,28 +3,37 @@ package com.ridelink.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import com.ridelink.app.permissions.PermissionsAndRadioGate
 import com.ridelink.app.pillion.PillionScreen
 import com.ridelink.app.rider.RiderScreen
 import com.ridelink.app.ui.theme.RideLinkTheme
+import com.ridelink.app.ui.theme.ThemePreferences
 
 private enum class Role { RIDER, PILLION }
 
@@ -32,9 +41,54 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            RideLinkTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    RideLinkApp()
+            RideLinkApp()
+        }
+    }
+}
+
+@Composable
+private fun RideLinkApp() {
+    val context = LocalContext.current
+    val view = LocalView.current
+    val activityWindow = (context as? ComponentActivity)?.window
+    val themePreferences = remember { ThemePreferences(context) }
+    val systemDarkTheme = isSystemInDarkTheme()
+    var isDarkTheme by remember {
+        mutableStateOf(themePreferences.isDarkTheme(systemDefault = systemDarkTheme))
+    }
+
+    // Android only shows readable status/nav bar icons if the app tells it
+    // which style matches the app's own current background -- this has to
+    // re-run every time the theme toggle changes, not just once at launch.
+    LaunchedEffect(isDarkTheme, activityWindow) {
+        val window = activityWindow ?: return@LaunchedEffect
+        val insetsController = WindowCompat.getInsetsController(window, view)
+        insetsController.isAppearanceLightStatusBars = !isDarkTheme
+        insetsController.isAppearanceLightNavigationBars = !isDarkTheme
+    }
+
+    RideLinkTheme(isDarkTheme = isDarkTheme) {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            var role by remember { mutableStateOf<Role?>(null) }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding(),
+            ) {
+                AppHeader(
+                    isDarkTheme = isDarkTheme,
+                    onToggleTheme = {
+                        isDarkTheme = !isDarkTheme
+                        themePreferences.setDarkTheme(isDarkTheme)
+                    },
+                )
+                PermissionsAndRadioGate {
+                    when (role) {
+                        null -> RolePickerScreen(onRoleSelected = { role = it })
+                        Role.PILLION -> PillionScreen(onBack = { role = null })
+                        Role.RIDER -> RiderScreen(onBack = { role = null })
+                    }
                 }
             }
         }
@@ -42,14 +96,22 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun RideLinkApp() {
-    var role by remember { mutableStateOf<Role?>(null) }
-
-    PermissionsAndRadioGate {
-        when (role) {
-            null -> RolePickerScreen(onRoleSelected = { role = it })
-            Role.PILLION -> PillionScreen(onBack = { role = null })
-            Role.RIDER -> RiderScreen(onBack = { role = null })
+private fun AppHeader(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = "RideLink", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = if (isDarkTheme) "Dark" else "Light",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(end = 8.dp),
+            )
+            Switch(checked = isDarkTheme, onCheckedChange = { onToggleTheme() })
         }
     }
 }
@@ -63,9 +125,9 @@ private fun RolePickerScreen(onRoleSelected: (Role) -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(text = "RideLink", style = MaterialTheme.typography.headlineLarge)
+        Text(text = "Who's on this phone for this ride?", style = MaterialTheme.typography.headlineSmall)
         Text(
-            text = "Who's on this phone for this ride?",
+            text = "Pick a role below -- the other phone should pick the other one.",
             style = MaterialTheme.typography.bodyLarge,
             modifier = Modifier.padding(top = 8.dp, bottom = 32.dp),
         )

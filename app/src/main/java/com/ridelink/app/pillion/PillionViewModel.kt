@@ -25,8 +25,12 @@ object PillionSession {
     private val _capturedLink = MutableStateFlow<String?>(null)
     val capturedLink: StateFlow<String?> = _capturedLink.asStateFlow()
 
-    private val _sent = MutableStateFlow(false)
-    val sent: StateFlow<Boolean> = _sent.asStateFlow()
+    // Tracks the last link actually sent, not just "have we ever sent
+    // anything" -- a boolean would permanently block every share after the
+    // first one, since a later share captures a *new* link that was never
+    // sent yet.
+    private val _lastSentLink = MutableStateFlow<String?>(null)
+    val lastSentLink: StateFlow<String?> = _lastSentLink.asStateFlow()
 
     fun manager(context: android.content.Context): NearbyManager {
         val existing = manager
@@ -37,9 +41,9 @@ object PillionSession {
         scope.launch {
             combine(created.state, _capturedLink) { state, link -> state to link }
                 .collect { (state, link) ->
-                    if (state is NearbyState.Connected && link != null && !_sent.value) {
+                    if (state is NearbyState.Connected && link != null && link != _lastSentLink.value) {
                         created.send(link)
-                        _sent.value = true
+                        _lastSentLink.value = link
                     }
                 }
         }
@@ -54,7 +58,7 @@ object PillionSession {
         manager?.stop()
         manager = null
         _capturedLink.value = null
-        _sent.value = false
+        _lastSentLink.value = null
     }
 }
 
@@ -64,7 +68,7 @@ class PillionViewModel(application: Application) : AndroidViewModel(application)
 
     val connectionState: StateFlow<NearbyState> get() = nearbyManager.state
     val capturedLink: StateFlow<String?> = PillionSession.capturedLink
-    val sent: StateFlow<Boolean> = PillionSession.sent
+    val lastSentLink: StateFlow<String?> = PillionSession.lastSentLink
 
     fun start() {
         nearbyManager.startAdvertising()

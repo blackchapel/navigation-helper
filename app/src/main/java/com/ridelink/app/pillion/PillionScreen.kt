@@ -16,13 +16,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ridelink.app.nearby.NearbyState
+import com.ridelink.app.nearby.formatPeerName
 
 @Composable
 fun PillionScreen(onBack: () -> Unit) {
     val viewModel: PillionViewModel = viewModel()
     val connectionState by viewModel.connectionState.collectAsState()
     val capturedLink by viewModel.capturedLink.collectAsState()
-    val sent by viewModel.sent.collectAsState()
+    val lastSentLink by viewModel.lastSentLink.collectAsState()
 
     DisposableEffect(Unit) {
         viewModel.start()
@@ -46,9 +47,12 @@ fun PillionScreen(onBack: () -> Unit) {
 
         Text(
             text = when {
-                sent -> "Route sent to rider ✓"
-                capturedLink != null -> "Route captured, waiting to connect..."
-                else -> "Now open Google Maps, build the route, and tap Share → RideLink."
+                capturedLink != null && capturedLink == lastSentLink ->
+                    "Route sent to your rider. Share another any time -- it'll go straight through."
+                capturedLink != null ->
+                    "Route captured -- sending as soon as you're connected..."
+                else ->
+                    "Open Google Maps, build your route, then tap Share → RideLink."
             },
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 8.dp),
@@ -68,7 +72,7 @@ fun PillionScreen(onBack: () -> Unit) {
 
 private fun connectionStatusText(state: NearbyState): String = when (state) {
     is NearbyState.Idle -> "Starting..."
-    is NearbyState.Searching -> "Waiting for rider to connect..."
-    is NearbyState.Connected -> "Connected to rider"
-    is NearbyState.Disconnected -> "Disconnected -- reopen this screen to retry"
+    is NearbyState.Searching -> "Waiting for your rider to connect..."
+    is NearbyState.Connected -> "Connected to ${formatPeerName(state.endpointName)}"
+    is NearbyState.Disconnected -> "Disconnected -- reopen this screen to try again"
 }

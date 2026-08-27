@@ -28,9 +28,12 @@ import kotlinx.coroutines.flow.asStateFlow
 sealed class NearbyState {
     data object Idle : NearbyState()
     data object Searching : NearbyState()
-    data class Connected(val endpointId: String) : NearbyState()
+    data class Connected(val endpointId: String, val endpointName: String) : NearbyState()
     data object Disconnected : NearbyState()
 }
+
+/** Strips the shared advertising prefix so the UI can show a plain device name. */
+fun formatPeerName(endpointName: String): String = endpointName.removePrefix("RideLink-")
 
 /**
  * Thin wrapper around Google Play services' Nearby Connections API.
@@ -40,6 +43,7 @@ class NearbyManager(context: Context) {
 
     private val connectionsClient: ConnectionsClient = Nearby.getConnectionsClient(context)
     private var connectedEndpointId: String? = null
+    private var pendingEndpointName: String? = null
 
     private val _state = MutableStateFlow<NearbyState>(NearbyState.Idle)
     val state: StateFlow<NearbyState> = _state.asStateFlow()
@@ -62,13 +66,14 @@ class NearbyManager(context: Context) {
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             // Both sides are trusted for this two-person use case: auto-accept.
+            pendingEndpointName = info.endpointName
             connectionsClient.acceptConnection(endpointId, payloadCallback)
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             if (result.status.isSuccess) {
                 connectedEndpointId = endpointId
-                _state.value = NearbyState.Connected(endpointId)
+                _state.value = NearbyState.Connected(endpointId, pendingEndpointName ?: "the other device")
             } else {
                 _state.value = NearbyState.Disconnected
             }
