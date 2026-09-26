@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ridelink.app.nearby.NearbyState
 import com.ridelink.app.nearby.formatPeerName
+import com.ridelink.app.voicechat.VoiceChatControls
 
 @Composable
 fun PillionScreen(onBack: () -> Unit) {
@@ -66,6 +67,12 @@ fun PillionScreen(onBack: () -> Unit) {
             modifier = Modifier.padding(top = 32.dp),
         ) {
             Text("End")
+        }
+
+        if (connectionState is NearbyState.Connected) {
+            viewModel.voiceChat?.let { voiceChat ->
+                VoiceChatControls(voiceChat = voiceChat, peerLabel = "your rider")
+            }
         }
     }
 }

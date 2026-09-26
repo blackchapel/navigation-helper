@@ -24,9 +24,19 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Voice chat: local mic capture/playback over the same Nearby link,
+         still no internet/server involved. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
+    <!-- Not required: a phone without a mic can still pair and share routes. -->
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
 
     <!-- API 30+ package visibility: needed to explicitly launch Google Maps. -->
     <queries>
@@ -73,6 +83,13 @@
             android:name=".rider.RiderForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Held only for the duration of an active voice chat call, by
+             whichever role started or accepted it. -->
+        <service
+            android:name=".voicechat.VoiceCallForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
     </application>
 </manifest>

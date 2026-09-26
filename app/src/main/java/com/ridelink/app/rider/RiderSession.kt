@@ -4,8 +4,10 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import com.ridelink.app.nearby.ControlMessage
 import com.ridelink.app.nearby.NearbyManager
 import com.ridelink.app.nearby.NearbyState
+import com.ridelink.app.voicechat.VoiceChatSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,6 +27,10 @@ internal const val GOOGLE_MAPS_PACKAGE = "com.google.android.apps.maps"
  */
 object RiderSession {
     private var manager: NearbyManager? = null
+
+    var voiceChat: VoiceChatSession? = null
+        private set
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private val _connectionState = MutableStateFlow<NearbyState>(NearbyState.Idle)
@@ -47,6 +53,7 @@ object RiderSession {
         val appContext = context.applicationContext
         val created = NearbyManager(appContext)
         manager = created
+        voiceChat = VoiceChatSession(appContext, created)
         _connectionState.value = NearbyState.Idle
         _latestRouteLink.value = null
         _lastRouteOpenedAt.value = null
@@ -55,18 +62,22 @@ object RiderSession {
             created.state.collect { _connectionState.value = it }
         }
         scope.launch {
-            created.receivedPayloads.collect { link ->
-                // Unconditional -- every route triggers a launch, whether
-                // it's the first of the ride or the fifth.
-                openInGoogleMaps(appContext, link)
-                _latestRouteLink.value = link
-                _lastRouteOpenedAt.value = System.currentTimeMillis()
+            created.receivedMessages.collect { message ->
+                if (message is ControlMessage.RouteLink) {
+                    // Unconditional -- every route triggers a launch, whether
+                    // it's the first of the ride or the fifth.
+                    openInGoogleMaps(appContext, message.url)
+                    _latestRouteLink.value = message.url
+                    _lastRouteOpenedAt.value = System.currentTimeMillis()
+                }
             }
         }
         created.startDiscovery()
     }
 
     fun reset() {
+        voiceChat?.shutdown()
+        voiceChat = null
         manager?.stop()
         manager = null
         _connectionState.value = NearbyState.Idle

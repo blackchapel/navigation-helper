@@ -15,6 +15,7 @@ import com.google.android.gms.nearby.connection.Payload
 import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
+import java.io.InputStream
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -36,6 +37,48 @@ sealed class NearbyState {
 fun formatPeerName(endpointName: String): String = endpointName.removePrefix("RideLink-")
 
 /**
+ * Small control-channel messages, sent as tagged BYTES payloads -- distinct
+ * from the continuous audio STREAM payloads used for voice chat, which never
+ * flow through this envelope (raw PCM bytes decoded as UTF-8 text would be
+ * silently corrupted).
+ */
+sealed class ControlMessage {
+    data class RouteLink(val url: String) : ControlMessage()
+    data object VoiceChatOffer : ControlMessage()
+    data object VoiceChatAccept : ControlMessage()
+    data object VoiceChatDecline : ControlMessage()
+    data object VoiceChatEnd : ControlMessage()
+
+    fun encode(): ByteArray = when (this) {
+        is RouteLink -> byteArrayOf(TAG_ROUTE_LINK) + url.toByteArray(Charsets.UTF_8)
+        VoiceChatOffer -> byteArrayOf(TAG_VOICE_OFFER)
+        VoiceChatAccept -> byteArrayOf(TAG_VOICE_ACCEPT)
+        VoiceChatDecline -> byteArrayOf(TAG_VOICE_DECLINE)
+        VoiceChatEnd -> byteArrayOf(TAG_VOICE_END)
+    }
+
+    companion object {
+        private const val TAG_ROUTE_LINK: Byte = 1
+        private const val TAG_VOICE_OFFER: Byte = 2
+        private const val TAG_VOICE_ACCEPT: Byte = 3
+        private const val TAG_VOICE_DECLINE: Byte = 4
+        private const val TAG_VOICE_END: Byte = 5
+
+        fun decode(bytes: ByteArray): ControlMessage? {
+            if (bytes.isEmpty()) return null
+            return when (bytes[0]) {
+                TAG_ROUTE_LINK -> RouteLink(String(bytes, 1, bytes.size - 1, Charsets.UTF_8))
+                TAG_VOICE_OFFER -> VoiceChatOffer
+                TAG_VOICE_ACCEPT -> VoiceChatAccept
+                TAG_VOICE_DECLINE -> VoiceChatDecline
+                TAG_VOICE_END -> VoiceChatEnd
+                else -> null
+            }
+        }
+    }
+}
+
+/**
  * Thin wrapper around Google Play services' Nearby Connections API.
  * Handles the whole handoff over local Bluetooth/Wi-Fi -- no server involved.
  */
@@ -44,22 +87,36 @@ class NearbyManager(context: Context) {
     private val connectionsClient: ConnectionsClient = Nearby.getConnectionsClient(context)
     private var connectedEndpointId: String? = null
     private var pendingEndpointName: String? = null
+    private var outgoingAudioPayloadId: Long? = null
 
     private val _state = MutableStateFlow<NearbyState>(NearbyState.Idle)
     val state: StateFlow<NearbyState> = _state.asStateFlow()
 
-    private val _receivedPayloads = MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val receivedPayloads: SharedFlow<String> = _receivedPayloads
+    private val _receivedMessages = MutableSharedFlow<ControlMessage>(extraBufferCapacity = 8)
+    val receivedMessages: SharedFlow<ControlMessage> = _receivedMessages
+
+    /** Emits each incoming continuous audio stream payload (voice chat). */
+    private val _incomingAudioStreams = MutableSharedFlow<Payload>(extraBufferCapacity = 1)
+    val incomingAudioStreams: SharedFlow<Payload> = _incomingAudioStreams
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            if (payload.type != Payload.Type.BYTES) return
-            val bytes = payload.asBytes() ?: return
-            _receivedPayloads.tryEmit(String(bytes, Charsets.UTF_8))
+            when (payload.type) {
+                Payload.Type.BYTES -> {
+                    val bytes = payload.asBytes() ?: return
+                    ControlMessage.decode(bytes)?.let { _receivedMessages.tryEmit(it) }
+                }
+                Payload.Type.STREAM -> {
+                    _incomingAudioStreams.tryEmit(payload)
+                }
+                else -> Unit
+            }
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            // Single small BYTES payload per ride -- no progress UI needed.
+            // Control messages are single small BYTES payloads -- no progress
+            // UI needed. Audio streams are continuous by design -- there's no
+            // meaningful "done" to react to before the call itself ends.
         }
     }
 
@@ -113,9 +170,23 @@ class NearbyManager(context: Context) {
             .addOnFailureListener { _state.value = NearbyState.Idle }
     }
 
-    fun send(text: String) {
+    fun send(message: ControlMessage) {
         val endpointId = connectedEndpointId ?: return
-        connectionsClient.sendPayload(endpointId, Payload.fromBytes(text.toByteArray(Charsets.UTF_8)))
+        connectionsClient.sendPayload(endpointId, Payload.fromBytes(message.encode()))
+    }
+
+    /** Starts sending [inputStream] to the peer as a continuous audio STREAM payload. */
+    fun sendAudioStream(inputStream: InputStream) {
+        val endpointId = connectedEndpointId ?: return
+        val payload = Payload.fromStream(inputStream)
+        outgoingAudioPayloadId = payload.id
+        connectionsClient.sendPayload(endpointId, payload)
+    }
+
+    /** Stops any outgoing audio stream started via [sendAudioStream]. */
+    fun cancelAudioStream() {
+        outgoingAudioPayloadId?.let { connectionsClient.cancelPayload(it) }
+        outgoingAudioPayloadId = null
     }
 
     fun stop() {
@@ -123,6 +194,7 @@ class NearbyManager(context: Context) {
         connectionsClient.stopDiscovery()
         connectionsClient.stopAllEndpoints()
         connectedEndpointId = null
+        outgoingAudioPayloadId = null
         _state.value = NearbyState.Idle
     }
 

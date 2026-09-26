@@ -35,10 +35,24 @@ class RideLinkApplication : Application() {
                 description = "Alerts you when your pillion shares a new route."
             },
         )
+
+        // Quiet, ongoing "call is active" status for VoiceCallForegroundService --
+        // same reasoning as the status channel above.
+        manager.createNotificationChannel(
+            NotificationChannel(
+                VOICE_CALL_CHANNEL_ID,
+                "Voice chat status",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "Shows when a RideLink voice chat call is active."
+                setShowBadge(false)
+            },
+        )
     }
 
     companion object {
         const val RIDER_STATUS_CHANNEL_ID = "rider_listening"
         const val RIDER_ROUTE_CHANNEL_ID = "rider_route_received"
+        const val VOICE_CALL_CHANNEL_ID = "voice_call_active"
     }
 }

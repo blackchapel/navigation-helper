@@ -2,8 +2,10 @@ package com.ridelink.app.pillion
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import com.ridelink.app.nearby.ControlMessage
 import com.ridelink.app.nearby.NearbyManager
 import com.ridelink.app.nearby.NearbyState
+import com.ridelink.app.voicechat.VoiceChatSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,6 +22,10 @@ import kotlinx.coroutines.launch
  */
 object PillionSession {
     private var manager: NearbyManager? = null
+
+    var voiceChat: VoiceChatSession? = null
+        private set
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private val _capturedLink = MutableStateFlow<String?>(null)
@@ -36,13 +42,15 @@ object PillionSession {
         val existing = manager
         if (existing != null) return existing
 
-        val created = NearbyManager(context.applicationContext)
+        val appContext = context.applicationContext
+        val created = NearbyManager(appContext)
         manager = created
+        voiceChat = VoiceChatSession(appContext, created)
         scope.launch {
             combine(created.state, _capturedLink) { state, link -> state to link }
                 .collect { (state, link) ->
                     if (state is NearbyState.Connected && link != null && link != _lastSentLink.value) {
-                        created.send(link)
+                        created.send(ControlMessage.RouteLink(link))
                         _lastSentLink.value = link
                     }
                 }
@@ -55,6 +63,8 @@ object PillionSession {
     }
 
     fun reset() {
+        voiceChat?.shutdown()
+        voiceChat = null
         manager?.stop()
         manager = null
         _capturedLink.value = null
@@ -69,6 +79,7 @@ class PillionViewModel(application: Application) : AndroidViewModel(application)
     val connectionState: StateFlow<NearbyState> get() = nearbyManager.state
     val capturedLink: StateFlow<String?> = PillionSession.capturedLink
     val lastSentLink: StateFlow<String?> = PillionSession.lastSentLink
+    val voiceChat: VoiceChatSession? get() = PillionSession.voiceChat
 
     fun start() {
         nearbyManager.startAdvertising()

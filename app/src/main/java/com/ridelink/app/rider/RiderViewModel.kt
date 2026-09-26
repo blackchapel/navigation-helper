@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import com.ridelink.app.nearby.NearbyState
+import com.ridelink.app.voicechat.VoiceChatSession
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -15,6 +16,7 @@ class RiderViewModel(application: Application) : AndroidViewModel(application) {
 
     val connectionState: StateFlow<NearbyState> = RiderSession.connectionState
     val lastRouteOpenedAt: StateFlow<Long?> = RiderSession.lastRouteOpenedAt
+    val voiceChat: VoiceChatSession? get() = RiderSession.voiceChat
 
     fun start() {
         val context = getApplication<Application>()
