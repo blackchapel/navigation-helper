@@ -11,3 +11,8 @@
 *.aab
 /app/build/
 /app/release/
+
+# Signing material must never be committed -- it's supplied to CI via
+# GitHub secrets (KEYSTORE_BASE64) and decoded to a runner temp file.
+*.jks
+*.keystore

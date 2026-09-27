@@ -1,22 +1,16 @@
-name: Test Release
+name: Production Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      branch:
-        description: "Branch to build the signed test release from"
-        required: true
-        default: "main"
-        type: string
+  push:
+    branches: [main]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout ${{ inputs.branch }}
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.branch }}
           # Full history -- versionCode is derived from commit count below,
           # which a shallow (default depth-1) clone would always report as 1.
           fetch-depth: 0
@@ -30,9 +24,6 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          # v3's default ("tools platform-tools") fails outright: Google has
-          # removed the legacy "tools" meta-package from the SDK repository
-          # entirely. Gradle fetches whatever platform/build-tools it needs.
           packages: "platform-tools"
 
       - name: Set up Gradle (with dependency caching)
@@ -47,11 +38,8 @@ jobs:
           BASE_VERSION=$(grep '^VERSION_NAME=' app/version.properties | cut -d'=' -f2 | tr -d '[:space:]')
           COMMIT_COUNT=$(git rev-list --count HEAD)
           SHORT_SHA=$(git rev-parse --short HEAD)
-          SAFE_BRANCH=$(echo '${{ inputs.branch }}' | tr '/' '-')
-          VERSION_NAME="${BASE_VERSION}-${SAFE_BRANCH}.${SHORT_SHA}"
-          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "version_name=$BASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "version_code=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
-          echo "safe_branch=$SAFE_BRANCH" >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Decode signing keystore
@@ -72,7 +60,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@v4
         with:
-          name: ridelink-test-${{ steps.version.outputs.safe_branch }}-${{ steps.version.outputs.version_name }}
+          name: ridelink-release-${{ steps.version.outputs.version_name }}
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
@@ -83,22 +71,20 @@ jobs:
           BUILD_STATUS: ${{ job.status }}
           VERSION_NAME: ${{ steps.version.outputs.version_name }}
           VERSION_CODE: ${{ steps.version.outputs.version_code }}
-          BRANCH_NAME: ${{ inputs.branch }}
           SHORT_SHA: ${{ steps.version.outputs.short_sha }}
           ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
         run: |
           if [ "$BUILD_STATUS" = "success" ]; then
-            TITLE="✅ RideLink test release built"
+            TITLE="🚀 RideLink production release built"
             COLOR=3066993
           else
-            TITLE="❌ RideLink test release failed"
+            TITLE="❌ RideLink production release failed"
             COLOR=15158332
           fi
           PAYLOAD=$(jq -n \
             --arg title "$TITLE" \
             --argjson color "$COLOR" \
             --arg version "${VERSION_NAME} (code ${VERSION_CODE})" \
-            --arg branch "$BRANCH_NAME" \
             --arg commit "$SHORT_SHA" \
             --arg artifact "$ARTIFACT_URL" \
             '{
@@ -108,7 +94,6 @@ jobs:
                 fields: (
                   [
                     {name: "Version", value: $version, inline: true},
-                    {name: "Branch", value: $branch, inline: true},
                     {name: "Commit", value: $commit, inline: true}
                   ]
                   + (if $artifact != "" then [{name: "Artifact", value: $artifact, inline: false}] else [] end)

@@ -1,8 +1,18 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// The single source of truth for the app's semantic version -- bump it by
+// hand when you mean to. CI appends its own build metadata on top (see
+// appVersionName below); this is only the fallback base for local builds.
+val baseVersionName = Properties().apply {
+    val propsFile = file("version.properties")
+    if (propsFile.exists()) propsFile.inputStream().use { load(it) }
+}.getProperty("VERSION_NAME", "1.0.0")
 
 android {
     namespace = "com.ridelink.app"
@@ -13,13 +23,35 @@ android {
         // Nearby Connections + Compose only; adaptive launcher icons need API 26+.
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // CI always passes both explicitly (computed from git in the
+        // workflow, so Play Store gets a monotonically increasing
+        // versionCode regardless of this file). Local builds fall back to
+        // a plain, never-published version.
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 1
+        versionName = (project.findProperty("appVersionName") as String?) ?: baseVersionName
+    }
+
+    signingConfigs {
+        create("release") {
+            // Populated by CI from the KEYSTORE_* secrets (see
+            // .github/workflows/build-apk.yml and release.yml). Left unset
+            // for a local build -- attempting assembleRelease without them
+            // fails loudly at signing time, which is correct: there's no
+            // meaningful unsigned fallback for a release build.
+            val keystorePath = System.getenv("KEYSTORE_PATH")
+            if (!keystorePath.isNullOrEmpty()) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
