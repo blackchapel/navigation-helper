@@ -12,6 +12,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      safe_branch: ${{ steps.version.outputs.safe_branch }}
+      short_sha: ${{ steps.version.outputs.short_sha }}
+      artifact_url: ${{ steps.upload.outputs.artifact-url }}
     steps:
       - name: Checkout ${{ inputs.branch }}
         uses: actions/checkout@v4
@@ -76,18 +82,22 @@ jobs:
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
+  notify:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
       - name: Notify Discord
-        if: always()
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          BUILD_STATUS: ${{ job.status }}
-          VERSION_NAME: ${{ steps.version.outputs.version_name }}
-          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          VERSION_NAME: ${{ needs.build.outputs.version_name }}
+          VERSION_CODE: ${{ needs.build.outputs.version_code }}
           BRANCH_NAME: ${{ inputs.branch }}
-          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
-          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          SHORT_SHA: ${{ needs.build.outputs.short_sha }}
+          ARTIFACT_URL: ${{ needs.build.outputs.artifact_url }}
         run: |
-          if [ "$BUILD_STATUS" = "success" ]; then
+          if [ "$BUILD_RESULT" = "success" ]; then
             TITLE="✅ RideLink test release built"
             COLOR=3066993
           else

@@ -48,15 +48,22 @@ AGP 8.7.2). Two ways to build:
   - **Test Release** (`build-apk.yml`) -- manually triggered, pick any
     branch. Use this to get a signed build of work-in-progress onto a
     test device.
-  - **Production Release** (`release.yml`) -- runs automatically on every
-    push to `main`.
+  - **Production Release** (`release.yml`) -- **manual only** (not
+    triggered by merging to `main`). Dispatch it against `main` when
+    you've decided it's time to cut a release: it tags the release,
+    creates a GitHub Release with the signed APK attached and
+    auto-generated, categorized release notes (every PR merged since the
+    last release, grouped by label), and posts the Release link to
+    Discord.
   - Both need these repository secrets configured: `KEYSTORE_BASE64`,
     `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`, and
-    `DISCORD_WEBHOOK_URL` (build results, versioned and tagged, are
-    posted to Discord). No key material lives in this repo.
-  - The app's semantic version lives in `app/version.properties` --
-    bump it by hand when intended; build number (`versionCode`) is
-    always derived automatically from commit count.
+    `DISCORD_WEBHOOK_URL`. No key material lives in this repo.
+  - **Semantic versioning**: `app/version.properties` holds only
+    `MAJOR.MINOR`, bumped by hand as part of whichever PR earns it (see
+    `CLAUDE.md` for how that's decided). PATCH is always computed
+    automatically at release time from existing release tags -- never
+    edited by hand. `versionCode` is separate and always derived
+    automatically from commit count.
 
 No API keys, accounts, or `local.properties` entries beyond the standard
 `sdk.dir` are needed for the app itself -- there's no backend and no
@@ -69,8 +76,10 @@ New work happens on a feature branch, never directly on `main`:
 1. Push the feature branch and run the **Test Release** workflow against
    it to get a signed build onto a real device.
 2. Once that's tested and approved, open a PR into `main`.
-3. Merge only happens on explicit approval -- merging triggers the
-   automatic **Production Release** build.
+3. Merge only happens on explicit approval. Merging by itself triggers
+   nothing further -- multiple PRs land on `main` this way over time, and
+   a **Production Release** is a separate, deliberate, manually-dispatched
+   step whenever it's time to ship.
 
 See `CLAUDE.md` for the full detail (including keeping `README.md`,
 `docs/SYSTEM_STATE.md`, and `docs/KNOWN_GAPS.md` current with every
