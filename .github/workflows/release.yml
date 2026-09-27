@@ -3,12 +3,13 @@ name: Production Release
 on:
   workflow_dispatch: {}
 
-permissions:
-  contents: write # needed to push the release tag and create the GitHub Release
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,30 +80,65 @@ jobs:
             -PappVersionCode=${{ steps.version.outputs.version_code }} \
             -PappVersionName=${{ steps.version.outputs.version_name }}
 
+      - name: Upload APK (hand-off to the release job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release tag and create the GitHub Release
+    outputs:
+      release_url: ${{ steps.release.outputs.url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: release-apk
+          path: app/build/outputs/apk/release/
+
       - name: Create GitHub Release
         id: release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag_name }}
-          name: ${{ steps.version.outputs.tag_name }}
+          tag_name: ${{ needs.build.outputs.tag_name }}
+          name: ${{ needs.build.outputs.tag_name }}
           generate_release_notes: true
           files: app/build/outputs/apk/release/app-release.apk
 
+  notify:
+    needs: [build, release]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
       - name: Notify Discord
-        if: always()
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          BUILD_STATUS: ${{ job.status }}
-          VERSION_NAME: ${{ steps.version.outputs.version_name }}
-          VERSION_CODE: ${{ steps.version.outputs.version_code }}
-          TAG_NAME: ${{ steps.version.outputs.tag_name }}
-          RELEASE_URL: ${{ steps.release.outputs.url }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          VERSION_NAME: ${{ needs.build.outputs.version_name }}
+          VERSION_CODE: ${{ needs.build.outputs.version_code }}
+          TAG_NAME: ${{ needs.build.outputs.tag_name }}
+          RELEASE_URL: ${{ needs.release.outputs.release_url }}
         run: |
-          if [ "$BUILD_STATUS" = "success" ]; then
+          if [ "$BUILD_RESULT" = "success" ] && [ "$RELEASE_RESULT" = "success" ]; then
             TITLE="🚀 RideLink production release published"
             COLOR=3066993
+          elif [ "$BUILD_RESULT" != "success" ]; then
+            TITLE="❌ RideLink production release failed (build)"
+            COLOR=15158332
           else
-            TITLE="❌ RideLink production release failed"
+            TITLE="❌ RideLink production release failed (release creation)"
             COLOR=15158332
           fi
           PAYLOAD=$(jq -n \

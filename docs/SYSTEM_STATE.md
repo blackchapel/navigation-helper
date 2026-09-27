@@ -93,38 +93,52 @@ Two roles, one pairing, no server anywhere:
   `versionCode` is separate and still fully automatic in both workflows
   (`git rev-list --count HEAD`).
 - `.github/workflows/build-apk.yml` ("Test Release") -- manual
-  (`workflow_dispatch`, a `branch` input), builds a **signed**
-  `assembleRelease` from any branch using the release keystore, with a
-  `<major.minor>-<branch>.<short-sha>` versionName (no patch number --
-  it's not a tagged release). Uploads the APK as a short-lived workflow
-  artifact and posts a Discord embed with that artifact's URL.
+  (`workflow_dispatch`, a `branch` input), **two sequential jobs**:
+  1. `build` -- signed `assembleRelease` from any branch using the release
+     keystore, `<major.minor>-<branch>.<short-sha>` versionName (no patch
+     number -- it's not a tagged release). Uploads the APK as a
+     short-lived workflow artifact; version info and the artifact's URL
+     are exposed as job outputs.
+  2. `notify` (`needs: build`, `if: always()` -- runs even if `build`
+     failed) -- posts a Discord embed using `build`'s outputs.
 - `.github/workflows/release.yml` ("Production Release") -- **manual
   only** (`workflow_dispatch`, no inputs -- dispatch it against `main`
-  from the branch selector). Does *not* run on merge/push anymore. Builds
-  the same signed `assembleRelease`, computes the next patch as above,
-  then:
-  1. Tags the built commit `v<version>` (refuses to run if that tag
-     already exists, as a safety check).
-  2. Creates a GitHub Release at that tag via `softprops/action-gh-release`
-     with `generate_release_notes: true` -- GitHub auto-compiles the
-     changelog from every PR merged since the previous release tag, and
-     `.github/release.yml` categorizes it by PR label ("🚀 Features",
-     "🐛 Fixes", "📝 Documentation", "🧰 Maintenance", "Other Changes" for
-     anything unlabeled).
-  3. Attaches the signed APK to that Release directly (not a separate
-     workflow artifact -- a tagged release should have a permanent,
-     versioned asset, not a 90-day CI artifact).
-  4. Posts a Discord embed with the **GitHub Release's own URL** (never
-     the Actions run link).
-- Both workflows read signing material from GitHub secrets
+  from the branch selector). Does *not* run on merge/push anymore.
+  **Three sequential jobs**, each depending on (and only running after)
+  the previous:
+  1. `build` -- computes the version (including the next patch number, as
+     above), builds the signed `assembleRelease`, and hands the APK to
+     the next job via a short-lived (`retention-days: 1`) workflow
+     artifact -- jobs don't share a filesystem, so this is the only way
+     to pass the built file across the job boundary. Refuses to run if
+     the computed tag already exists (safety check).
+  2. `release` (`needs: build`) -- downloads that APK, tags the built
+     commit `v<version>`, and creates a GitHub Release at that tag via
+     `softprops/action-gh-release` with `generate_release_notes: true`
+     (GitHub auto-compiles the changelog from every PR merged since the
+     previous release tag; `.github/release.yml` categorizes it by PR
+     label -- "🚀 Features", "🐛 Fixes", "📝 Documentation", "🧰
+     Maintenance", "Other Changes" for anything unlabeled) with the APK
+     attached directly to the Release (a permanent, versioned asset, not
+     a CI artifact). Only this job has `permissions: contents: write`
+     (least privilege -- it's the only one that pushes a tag/creates a
+     release).
+  3. `notify` (`needs: [build, release]`, `if: always()` -- runs even if
+     either prior job failed) -- posts a Discord embed with the **GitHub
+     Release's own URL** (never the Actions run link), using
+     `needs.build.result`/`needs.release.result` to report which stage
+     failed, if any.
+- Both workflows' `build` job reads signing material from GitHub secrets
   (`KEYSTORE_BASE64`/`KEYSTORE_PASSWORD`/`KEY_ALIAS`/`KEY_PASSWORD`,
-  decoded to a runner temp file) and post to a `DISCORD_WEBHOOK_URL`
-  secret. `app/build.gradle.kts`'s `signingConfigs.release` reads
+  decoded to a runner temp file); both `notify` jobs post to a
+  `DISCORD_WEBHOOK_URL` secret. `app/build.gradle.kts`'s
+  `signingConfigs.release` reads
   `KEYSTORE_PATH`/`KEYSTORE_PASSWORD`/`KEY_ALIAS`/`KEY_PASSWORD` from the
   environment; unset locally, so a local `assembleRelease` fails loudly
   at signing time (expected -- there's no meaningful unsigned fallback
-  for a release build). `release.yml` also needs `permissions:
-  contents: write` (to push the tag and create the Release) since a
+  for a release build). Only `release.yml`'s `release` job carries
+  `permissions: contents: write` (to push the tag and create the
+  Release) -- everything else stays read-only. This matters since a
   repo's default `GITHUB_TOKEN` permissions are often read-only.
 - Repo workflow going forward (see `CLAUDE.md`): multiple PRs merge into
   `main` over time (each: feature branch -> Test Release build -> user
