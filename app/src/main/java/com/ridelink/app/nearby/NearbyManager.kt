@@ -15,7 +15,7 @@ import com.google.android.gms.nearby.connection.Payload
 import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
-import java.io.InputStream
+import kotlinx.coroutines.flow.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -38,9 +38,9 @@ fun formatPeerName(endpointName: String): String = endpointName.removePrefix("Ri
 
 /**
  * Small control-channel messages, sent as tagged BYTES payloads -- distinct
- * from the continuous audio STREAM payloads used for voice chat, which never
- * flow through this envelope (raw PCM bytes decoded as UTF-8 text would be
- * silently corrupted).
+ * from the audio chunks sent via [NearbyManager.sendAudioChunk], which use
+ * their own tag ([TAG_AUDIO_CHUNK]) and never flow through this envelope
+ * (raw PCM bytes decoded as UTF-8 text would be silently corrupted).
  */
 sealed class ControlMessage {
     data class RouteLink(val url: String) : ControlMessage()
@@ -78,6 +78,11 @@ sealed class ControlMessage {
     }
 }
 
+/** One chunk of the peer's captured mic audio, tagged with its send order. */
+data class AudioChunk(val sequenceNumber: Int, val data: ByteArray)
+
+private const val TAG_AUDIO_CHUNK: Byte = 6
+
 /**
  * Thin wrapper around Google Play services' Nearby Connections API.
  * Handles the whole handoff over local Bluetooth/Wi-Fi -- no server involved.
@@ -87,7 +92,6 @@ class NearbyManager(context: Context) {
     private val connectionsClient: ConnectionsClient = Nearby.getConnectionsClient(context)
     private var connectedEndpointId: String? = null
     private var pendingEndpointName: String? = null
-    private var outgoingAudioPayloadId: Long? = null
 
     private val _state = MutableStateFlow<NearbyState>(NearbyState.Idle)
     val state: StateFlow<NearbyState> = _state.asStateFlow()
@@ -95,28 +99,32 @@ class NearbyManager(context: Context) {
     private val _receivedMessages = MutableSharedFlow<ControlMessage>(extraBufferCapacity = 8)
     val receivedMessages: SharedFlow<ControlMessage> = _receivedMessages
 
-    /** Emits each incoming continuous audio stream payload (voice chat). */
-    private val _incomingAudioStreams = MutableSharedFlow<Payload>(extraBufferCapacity = 1)
-    val incomingAudioStreams: SharedFlow<Payload> = _incomingAudioStreams
+    // DROP_OLDEST so a receive-side backlog can never grow into latency --
+    // an unread chunk is stale by the time a newer one arrives anyway.
+    private val _incomingAudioChunks = MutableSharedFlow<AudioChunk>(
+        extraBufferCapacity = 8,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val incomingAudioChunks: SharedFlow<AudioChunk> = _incomingAudioChunks
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             when (payload.type) {
                 Payload.Type.BYTES -> {
                     val bytes = payload.asBytes() ?: return
-                    ControlMessage.decode(bytes)?.let { _receivedMessages.tryEmit(it) }
-                }
-                Payload.Type.STREAM -> {
-                    _incomingAudioStreams.tryEmit(payload)
+                    if (bytes.isNotEmpty() && bytes[0] == TAG_AUDIO_CHUNK) {
+                        decodeAudioChunk(bytes)?.let { _incomingAudioChunks.tryEmit(it) }
+                    } else {
+                        ControlMessage.decode(bytes)?.let { _receivedMessages.tryEmit(it) }
+                    }
                 }
                 else -> Unit
             }
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            // Control messages are single small BYTES payloads -- no progress
-            // UI needed. Audio streams are continuous by design -- there's no
-            // meaningful "done" to react to before the call itself ends.
+            // Every payload here (control messages, audio chunks) is a single
+            // small BYTES payload -- no progress UI needed.
         }
     }
 
@@ -156,7 +164,10 @@ class NearbyManager(context: Context) {
 
     fun startAdvertising() {
         _state.value = NearbyState.Searching
-        val options = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_POINT_TO_POINT).build()
+        val options = AdvertisingOptions.Builder()
+            .setStrategy(Strategy.P2P_POINT_TO_POINT)
+            .setLowPower(false) // prioritize connection/throughput over battery
+            .build()
         connectionsClient
             .startAdvertising(LOCAL_ENDPOINT_NAME, SERVICE_ID, connectionLifecycleCallback, options)
             .addOnFailureListener { _state.value = NearbyState.Idle }
@@ -164,7 +175,10 @@ class NearbyManager(context: Context) {
 
     fun startDiscovery() {
         _state.value = NearbyState.Searching
-        val options = DiscoveryOptions.Builder().setStrategy(Strategy.P2P_POINT_TO_POINT).build()
+        val options = DiscoveryOptions.Builder()
+            .setStrategy(Strategy.P2P_POINT_TO_POINT)
+            .setLowPower(false)
+            .build()
         connectionsClient
             .startDiscovery(SERVICE_ID, endpointDiscoveryCallback, options)
             .addOnFailureListener { _state.value = NearbyState.Idle }
@@ -175,18 +189,33 @@ class NearbyManager(context: Context) {
         connectionsClient.sendPayload(endpointId, Payload.fromBytes(message.encode()))
     }
 
-    /** Starts sending [inputStream] to the peer as a continuous audio STREAM payload. */
-    fun sendAudioStream(inputStream: InputStream) {
+    /**
+     * Sends one chunk of captured mic audio as its own small BYTES payload --
+     * fire-and-forget, nothing to cancel once sent. Chosen over a single
+     * long-lived Payload.fromStream() specifically so a lost/delayed chunk
+     * can never stall everything queued behind it: STREAM payloads are
+     * delivered reliably and in order, which is exactly wrong for real-time
+     * audio on a link that can momentarily degrade (bike-riding range).
+     */
+    fun sendAudioChunk(sequenceNumber: Int, data: ByteArray, length: Int) {
         val endpointId = connectedEndpointId ?: return
-        val payload = Payload.fromStream(inputStream)
-        outgoingAudioPayloadId = payload.id
-        connectionsClient.sendPayload(endpointId, payload)
+        val framed = ByteArray(5 + length)
+        framed[0] = TAG_AUDIO_CHUNK
+        framed[1] = (sequenceNumber ushr 24).toByte()
+        framed[2] = (sequenceNumber ushr 16).toByte()
+        framed[3] = (sequenceNumber ushr 8).toByte()
+        framed[4] = sequenceNumber.toByte()
+        System.arraycopy(data, 0, framed, 5, length)
+        connectionsClient.sendPayload(endpointId, Payload.fromBytes(framed))
     }
 
-    /** Stops any outgoing audio stream started via [sendAudioStream]. */
-    fun cancelAudioStream() {
-        outgoingAudioPayloadId?.let { connectionsClient.cancelPayload(it) }
-        outgoingAudioPayloadId = null
+    private fun decodeAudioChunk(bytes: ByteArray): AudioChunk? {
+        if (bytes.size <= 5) return null
+        val sequenceNumber = ((bytes[1].toInt() and 0xFF) shl 24) or
+            ((bytes[2].toInt() and 0xFF) shl 16) or
+            ((bytes[3].toInt() and 0xFF) shl 8) or
+            (bytes[4].toInt() and 0xFF)
+        return AudioChunk(sequenceNumber, bytes.copyOfRange(5, bytes.size))
     }
 
     fun stop() {
@@ -194,7 +223,6 @@ class NearbyManager(context: Context) {
         connectionsClient.stopDiscovery()
         connectionsClient.stopAllEndpoints()
         connectedEndpointId = null
-        outgoingAudioPayloadId = null
         _state.value = NearbyState.Idle
     }
 

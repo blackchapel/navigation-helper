@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import com.ridelink.app.nearby.AudioChunk
 import com.ridelink.app.nearby.ControlMessage
 import com.ridelink.app.nearby.NearbyManager
 import com.ridelink.app.nearby.NearbyState
@@ -43,6 +44,12 @@ class VoiceChatSession(private val context: Context, private val nearbyManager: 
 
     private var focusRequest: AudioFocusRequest? = null
 
+    // Next sequence number the receiver will accept -- not a reorder/wait
+    // buffer. A chunk older than this is stale and dropped; a chunk newer
+    // than expected is played immediately and jumps the pointer forward,
+    // treating the gap as skipped rather than something to wait for.
+    private var expectedSeq = 0
+
     init {
         scope.launch {
             nearbyManager.receivedMessages.collect { message ->
@@ -72,9 +79,10 @@ class VoiceChatSession(private val context: Context, private val nearbyManager: 
             }
         }
         scope.launch {
-            nearbyManager.incomingAudioStreams.collect { payload ->
-                val inputStream = payload.asStream()?.asInputStream() ?: return@collect
-                audioPlayback.start(inputStream)
+            nearbyManager.incomingAudioChunks.collect { chunk: AudioChunk ->
+                if (chunk.sequenceNumber < expectedSeq) return@collect // stale/duplicate -- drop
+                expectedSeq = chunk.sequenceNumber + 1
+                audioPlayback.submit(chunk.data)
             }
         }
         // A Nearby-level disconnect always ends any in-progress call -- there's
@@ -138,16 +146,16 @@ class VoiceChatSession(private val context: Context, private val nearbyManager: 
     private fun beginCall() {
         VoiceCallForegroundService.start(context)
         requestAudioFocusAndMode()
-        val micStream = audioCapture.start()
+        expectedSeq = 0
+        audioPlayback.start()
         audioCapture.setMuted(_isMuted.value)
-        nearbyManager.sendAudioStream(micStream)
+        audioCapture.start { data, seq -> nearbyManager.sendAudioChunk(seq, data, data.size) }
         _callState.value = VoiceChatState.ACTIVE
     }
 
     private fun endCallLocally() {
         audioCapture.stop()
         audioPlayback.stop()
-        nearbyManager.cancelAudioStream()
         abandonAudioFocusAndMode()
         VoiceCallForegroundService.stop(context)
         _isMuted.value = false

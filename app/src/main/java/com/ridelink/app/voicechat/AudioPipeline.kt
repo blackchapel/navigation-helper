@@ -8,10 +8,7 @@ import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.os.Process
-import java.io.IOException
-import java.io.InputStream
-import java.io.PipedInputStream
-import java.io.PipedOutputStream
+import java.util.concurrent.ArrayBlockingQueue
 
 // Telephony-band voice quality (not 16kHz): halves the raw bitrate to
 // 128kbps at exactly the point where Nearby Connections' real achievable
@@ -22,13 +19,13 @@ private const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
 private const val CHANNEL_OUT = AudioFormat.CHANNEL_OUT_MONO
 private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
 private const val CHUNK_BYTES = 320 // 20ms at 8kHz/16-bit mono
-private const val PIPE_BUFFER_BYTES = 16000 // ~1s of slack at 128kbps
+private const val PLAYBACK_QUEUE_CAPACITY = 4 // ~80ms bounded jitter buffer
 
 /**
- * Captures mic audio on a dedicated real-time thread and exposes it as an
- * InputStream suitable for Payload.fromStream() -- Nearby Connections reads
- * from it on its own internal thread, so the capture thread and the pipe's
- * reader are always distinct (a hard PipedInputStream requirement).
+ * Captures mic audio on a dedicated real-time thread, handing each 20ms
+ * chunk straight to [onChunk] as soon as it's read -- no buffering between
+ * capture and send, so the only latency this side contributes is the time
+ * to fill one chunk.
  */
 internal class AudioCapture {
     private var audioRecord: AudioRecord? = null
@@ -39,15 +36,15 @@ internal class AudioCapture {
     @Volatile
     private var muted = false
 
-    /** Starts capturing and returns a live stream of the mic audio. Call [stop] to release everything. */
-    fun start(): InputStream {
+    /** Starts capturing; call [stop] to release everything. */
+    fun start(onChunk: (data: ByteArray, sequenceNumber: Int) -> Unit) {
         val minBuffer = AudioRecord.getMinBufferSize(VOICE_SAMPLE_RATE, CHANNEL_IN, ENCODING)
         val record = AudioRecord(
             MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             VOICE_SAMPLE_RATE,
             CHANNEL_IN,
             ENCODING,
-            maxOf(minBuffer, CHUNK_BYTES * 4),
+            maxOf(minBuffer, CHUNK_BYTES * 2),
         )
         audioRecord = record
 
@@ -62,31 +59,26 @@ internal class AudioCapture {
             noiseSuppressor = NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true }
         }
 
-        val pipedOutput = PipedOutputStream()
-        val pipedInput = PipedInputStream(pipedOutput, PIPE_BUFFER_BYTES)
-
         record.startRecording()
         val thread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+            var sequenceNumber = 0
             val buffer = ByteArray(CHUNK_BYTES)
-            try {
-                while (!Thread.currentThread().isInterrupted) {
-                    val read = record.read(buffer, 0, buffer.size)
-                    if (read <= 0) continue
-                    // Muted frames are simply dropped rather than sent as
-                    // zeroed bytes -- saves bandwidth too.
-                    if (!muted) {
-                        pipedOutput.write(buffer, 0, read)
-                    }
+            while (!Thread.currentThread().isInterrupted) {
+                val read = record.read(buffer, 0, buffer.size)
+                if (read <= 0) continue
+                val seq = sequenceNumber++
+                // Muted frames are simply dropped rather than sent as
+                // zeroed bytes -- saves bandwidth too. Sequence numbers keep
+                // advancing regardless, so the receiver sees an ordinary gap
+                // to skip over on unmute, nothing to special-case.
+                if (!muted) {
+                    onChunk(buffer.copyOf(read), seq)
                 }
-            } catch (e: IOException) {
-                // Pipe closed by stop() -- expected, not an error.
             }
         }, "RideLink-AudioCapture")
         captureThread = thread
         thread.start()
-
-        return pipedInput
     }
 
     fun setMuted(muted: Boolean) {
@@ -113,14 +105,17 @@ internal class AudioCapture {
 }
 
 /**
- * Plays back audio arriving from the peer's InputStream (a Nearby
- * Connections STREAM payload) on a dedicated real-time thread.
+ * Plays back audio chunks as they arrive via [submit], through a small
+ * bounded queue that drops the oldest chunk instead of growing without
+ * bound -- a receive-side stall loses at most ~80ms of stale audio rather
+ * than ever falling further behind live.
  */
 internal class AudioPlayback {
     private var audioTrack: AudioTrack? = null
     private var playbackThread: Thread? = null
+    private var queue: ArrayBlockingQueue<ByteArray>? = null
 
-    fun start(inputStream: InputStream) {
+    fun start() {
         val minBuffer = AudioTrack.getMinBufferSize(VOICE_SAMPLE_RATE, CHANNEL_OUT, ENCODING)
         val track = AudioTrack.Builder()
             .setAudioAttributes(
@@ -136,35 +131,44 @@ internal class AudioPlayback {
                     .setEncoding(ENCODING)
                     .build(),
             )
-            .setBufferSizeInBytes(maxOf(minBuffer, CHUNK_BYTES * 4))
+            .setBufferSizeInBytes(maxOf(minBuffer, CHUNK_BYTES * 2))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
             .build()
         audioTrack = track
         track.play()
 
+        val chunkQueue = ArrayBlockingQueue<ByteArray>(PLAYBACK_QUEUE_CAPACITY)
+        queue = chunkQueue
+
         val thread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-            val buffer = ByteArray(CHUNK_BYTES)
             try {
                 while (!Thread.currentThread().isInterrupted) {
-                    val read = inputStream.read(buffer)
-                    if (read < 0) break // peer ended the stream
-                    if (read > 0) {
-                        track.write(buffer, 0, read)
-                    }
+                    val chunk = chunkQueue.take()
+                    track.write(chunk, 0, chunk.size)
                 }
-            } catch (e: IOException) {
-                // Stream closed/cancelled -- expected on hang-up.
+            } catch (e: InterruptedException) {
+                // Interrupted by stop() -- expected, not an error.
             }
         }, "RideLink-AudioPlayback")
         playbackThread = thread
         thread.start()
     }
 
+    /** Enqueues a chunk for playback, dropping the oldest queued chunk if full. */
+    fun submit(chunk: ByteArray) {
+        val chunkQueue = queue ?: return
+        if (!chunkQueue.offer(chunk)) {
+            chunkQueue.poll()
+            chunkQueue.offer(chunk)
+        }
+    }
+
     fun stop() {
         playbackThread?.interrupt()
         playbackThread = null
+        queue = null
         audioTrack?.let {
             try {
                 it.stop()
