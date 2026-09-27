@@ -13,18 +13,25 @@
   auto-triggers `.github/workflows/release.yml` (the signed **Production
   Release** build) — that's exactly why the approval gate matters.
 
-## Docs stay current
+## Docs: read before writing code, update after
 
-Any change that touches app behavior, the build, or the release pipeline
-updates all three of these in the same branch/PR — don't let them drift:
+Before starting any change, read all three of these -- they're the
+fastest way to pick up real context (architecture, what already exists,
+what's already known to be broken or risky) without re-deriving it from
+source or repeating work already flagged as a gap:
 
 - `README.md` — user/build-facing: what the app does, how to build it,
   how to test it.
 - `docs/SYSTEM_STATE.md` — technical snapshot: architecture, module map,
   what's implemented, the release pipeline as it actually exists.
-- `docs/KNOWN_GAPS.md` — open limitations/risks, added to or resolved as
-  they change. Don't let a real gap go undocumented just because it's
-  inconvenient.
+- `docs/KNOWN_GAPS.md` — open limitations/risks. Check this before
+  assuming something is unhandled -- it may already be a known,
+  deliberate trade-off rather than an oversight.
+
+Then, any change that touches app behavior, the build, or the release
+pipeline updates all three of these in the same branch/PR — don't let
+them drift. That includes `docs/KNOWN_GAPS.md`: add newly-found gaps,
+and remove/update ones this change actually resolves.
 
 ## Sandbox constraint
 
