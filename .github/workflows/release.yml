@@ -1,18 +1,21 @@
 name: Production Release
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # needed to push the release tag and create the GitHub Release
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Full history -- versionCode is derived from commit count below,
-          # which a shallow (default depth-1) clone would always report as 1.
+          # Full history and tags -- both the versionCode (commit count) and
+          # the next patch number (highest existing v<major.minor>.* tag)
+          # below need them; the default shallow clone has neither.
           fetch-depth: 0
 
       - name: Set up JDK 17
@@ -37,10 +40,30 @@ jobs:
         run: |
           BASE_VERSION=$(grep '^VERSION_NAME=' app/version.properties | cut -d'=' -f2 | tr -d '[:space:]')
           COMMIT_COUNT=$(git rev-list --count HEAD)
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          echo "version_name=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+
+          # Next patch = 1 + the highest existing v<major.minor>.<patch> tag
+          # for this major.minor line, or 0 if that line has no tags yet.
+          LATEST_PATCH=$(git tag --list "v${BASE_VERSION}.*" \
+            | sed -E "s/^v${BASE_VERSION}\.([0-9]+)$/\1/" \
+            | sort -n \
+            | tail -1)
+          if [ -z "$LATEST_PATCH" ]; then
+            NEXT_PATCH=0
+          else
+            NEXT_PATCH=$((LATEST_PATCH + 1))
+          fi
+
+          VERSION_NAME="${BASE_VERSION}.${NEXT_PATCH}"
+          TAG_NAME="v${VERSION_NAME}"
+
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG_NAME already exists -- refusing to overwrite a release."
+            exit 1
+          fi
+
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "version_code=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Decode signing keystore
         run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "${{ runner.temp }}/release.jks"
@@ -56,13 +79,14 @@ jobs:
             -PappVersionCode=${{ steps.version.outputs.version_code }} \
             -PappVersionName=${{ steps.version.outputs.version_name }}
 
-      - name: Upload APK
-        id: upload
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v2
         with:
-          name: ridelink-release-${{ steps.version.outputs.version_name }}
-          path: app/build/outputs/apk/release/app-release.apk
-          if-no-files-found: error
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          name: ${{ steps.version.outputs.tag_name }}
+          generate_release_notes: true
+          files: app/build/outputs/apk/release/app-release.apk
 
       - name: Notify Discord
         if: always()
@@ -71,11 +95,11 @@ jobs:
           BUILD_STATUS: ${{ job.status }}
           VERSION_NAME: ${{ steps.version.outputs.version_name }}
           VERSION_CODE: ${{ steps.version.outputs.version_code }}
-          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
-          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          TAG_NAME: ${{ steps.version.outputs.tag_name }}
+          RELEASE_URL: ${{ steps.release.outputs.url }}
         run: |
           if [ "$BUILD_STATUS" = "success" ]; then
-            TITLE="🚀 RideLink production release built"
+            TITLE="🚀 RideLink production release published"
             COLOR=3066993
           else
             TITLE="❌ RideLink production release failed"
@@ -85,8 +109,8 @@ jobs:
             --arg title "$TITLE" \
             --argjson color "$COLOR" \
             --arg version "${VERSION_NAME} (code ${VERSION_CODE})" \
-            --arg commit "$SHORT_SHA" \
-            --arg artifact "$ARTIFACT_URL" \
+            --arg tag "$TAG_NAME" \
+            --arg release "$RELEASE_URL" \
             '{
               embeds: [{
                 title: $title,
@@ -94,9 +118,9 @@ jobs:
                 fields: (
                   [
                     {name: "Version", value: $version, inline: true},
-                    {name: "Commit", value: $commit, inline: true}
+                    {name: "Tag", value: $tag, inline: true}
                   ]
-                  + (if $artifact != "" then [{name: "Artifact", value: $artifact, inline: false}] else [] end)
+                  + (if $release != "" then [{name: "Release", value: $release, inline: false}] else [] end)
                 )
               }]
             }')

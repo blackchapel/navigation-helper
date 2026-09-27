@@ -60,3 +60,14 @@ part of the change that touches them -- see `CLAUDE.md`.
   under the same signing identity again. It must be backed up outside
   GitHub (a password manager or offline backup), not just left as a
   GitHub secret.
+- **MAJOR/MINOR version classification has no automated enforcement.**
+  Whoever authors a PR decides whether it earns a MINOR/MAJOR bump (see
+  `CLAUDE.md`) and edits `version.properties` by hand -- there's no
+  conventional-commit linting or similar check that would catch a
+  PR that should have bumped the version but didn't (or bumped it when it
+  shouldn't have). PATCH itself is fully automatic and not at risk here.
+- **Release note quality depends on PR labeling discipline.** An
+  unlabeled PR just lands in "Other Changes" in the categorized release
+  notes (see `docs/SYSTEM_STATE.md`) rather than failing anything --
+  there's no enforcement that every PR gets a category label before
+  merge.

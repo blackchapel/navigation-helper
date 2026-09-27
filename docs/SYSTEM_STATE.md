@@ -84,31 +84,53 @@ Two roles, one pairing, no server anywhere:
 
 ## Release pipeline
 
-- `app/version.properties` -- the single hand-edited semantic version
-  (`VERSION_NAME=1.0.0` currently). `versionCode` is never edited by
-  hand -- both workflows compute it from `git rev-list --count HEAD`.
+- **Versioning**: `app/version.properties` holds only `VERSION_NAME=
+  <major>.<minor>` -- hand-edited (see `CLAUDE.md` for how the bump is
+  decided), never a full semver string. PATCH is never edited by hand --
+  Production Release computes it each run as `1 + the highest existing
+  v<major>.<minor>.*` tag (0 if that line has no tags yet), so the full
+  released version is `<major>.<minor>.<patch>`, tagged `v<version>`.
+  `versionCode` is separate and still fully automatic in both workflows
+  (`git rev-list --count HEAD`).
 - `.github/workflows/build-apk.yml` ("Test Release") -- manual
   (`workflow_dispatch`, a `branch` input), builds a **signed**
   `assembleRelease` from any branch using the release keystore, with a
-  `<version>-<branch>.<short-sha>` versionName. Uploads the APK as an
-  artifact and posts a Discord embed.
-- `.github/workflows/release.yml` ("Production Release") -- triggers
-  automatically on every push to `main`, same signed `assembleRelease`
-  build, clean versionName (no branch/sha suffix). Same artifact +
-  Discord notification pattern.
-- Both read signing material from GitHub secrets
+  `<major.minor>-<branch>.<short-sha>` versionName (no patch number --
+  it's not a tagged release). Uploads the APK as a short-lived workflow
+  artifact and posts a Discord embed with that artifact's URL.
+- `.github/workflows/release.yml` ("Production Release") -- **manual
+  only** (`workflow_dispatch`, no inputs -- dispatch it against `main`
+  from the branch selector). Does *not* run on merge/push anymore. Builds
+  the same signed `assembleRelease`, computes the next patch as above,
+  then:
+  1. Tags the built commit `v<version>` (refuses to run if that tag
+     already exists, as a safety check).
+  2. Creates a GitHub Release at that tag via `softprops/action-gh-release`
+     with `generate_release_notes: true` -- GitHub auto-compiles the
+     changelog from every PR merged since the previous release tag, and
+     `.github/release.yml` categorizes it by PR label ("🚀 Features",
+     "🐛 Fixes", "📝 Documentation", "🧰 Maintenance", "Other Changes" for
+     anything unlabeled).
+  3. Attaches the signed APK to that Release directly (not a separate
+     workflow artifact -- a tagged release should have a permanent,
+     versioned asset, not a 90-day CI artifact).
+  4. Posts a Discord embed with the **GitHub Release's own URL** (never
+     the Actions run link).
+- Both workflows read signing material from GitHub secrets
   (`KEYSTORE_BASE64`/`KEYSTORE_PASSWORD`/`KEY_ALIAS`/`KEY_PASSWORD`,
   decoded to a runner temp file) and post to a `DISCORD_WEBHOOK_URL`
-  secret -- deliberately never the GitHub Actions run link, only the
-  artifact's own `actions/upload-artifact@v4` `artifact-url` output.
-  `app/build.gradle.kts`'s `signingConfigs.release` reads
+  secret. `app/build.gradle.kts`'s `signingConfigs.release` reads
   `KEYSTORE_PATH`/`KEYSTORE_PASSWORD`/`KEY_ALIAS`/`KEY_PASSWORD` from the
   environment; unset locally, so a local `assembleRelease` fails loudly
   at signing time (expected -- there's no meaningful unsigned fallback
-  for a release build).
-- Repo workflow going forward (see `CLAUDE.md`): feature branch -> Test
-  Release build -> user approval -> PR -> **explicit** user approval ->
-  merge to `main` (which is what actually triggers Production Release).
+  for a release build). `release.yml` also needs `permissions:
+  contents: write` (to push the tag and create the Release) since a
+  repo's default `GITHUB_TOKEN` permissions are often read-only.
+- Repo workflow going forward (see `CLAUDE.md`): multiple PRs merge into
+  `main` over time (each: feature branch -> Test Release build -> user
+  approval -> PR -> **explicit** user approval -> merge -- merging alone
+  triggers nothing); when it's time to ship, the user manually dispatches
+  Production Release against `main`.
 
 ## Pinned versions (as of this snapshot)
 
